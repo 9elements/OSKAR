@@ -5,10 +5,7 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(type_alias_impl_trait)]
 
-#![allow(unused)]
-
 use assign_resources::assign_resources;
-use embassy_sync::watch;
 use core::panic::PanicInfo;
 use cortex_m::peripheral::SCB;
 use defmt_rtt as _;
@@ -21,22 +18,22 @@ use embassy_rp::interrupt;
 use embassy_rp::interrupt::{InterruptExt, Priority};
 use embassy_rp::peripherals::{self, PIO0, SPI0, USB};
 use embassy_rp::pio::InterruptHandler as PIOInterruptHandler;
-use embassy_rp::watchdog::{Watchdog};
 use embassy_rp::spi::{Config as SpiConfig, Spi};
 use embassy_rp::usb::{Driver, InterruptHandler as USBInterruptHandler};
+use embassy_rp::watchdog::Watchdog;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcAcmState};
-use embassy_usb::class::hid::{HidReaderWriter,State as Hid_State};
+use embassy_usb::class::hid::{HidReaderWriter, State as Hid_State};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
 // use embassy_usb::driver::EndpointError;
 use embassy_usb::{Config as UsbConfig, UsbDevice};
 use heapless::String;
 use static_cell::StaticCell;
-use ufmt::{derive, uwrite};
+use ufmt::uwrite;
 
-mod uart;
 mod hid;
 mod led;
+mod uart;
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => USBInterruptHandler<USB>;
     PIO0_IRQ_0 => PIOInterruptHandler<PIO0>;
@@ -80,8 +77,8 @@ assign_resources! {
     }
 }
 
-#[derive(Clone,Copy, Debug)]
-pub enum DeviceMode{
+#[derive(Clone, Copy, Debug)]
+pub enum DeviceMode {
     Keyboard,
     Picoprog,
     Universal,
@@ -103,15 +100,15 @@ async fn main(spawner: Spawner) {
     let r: AssignedResources = split_resources!(p);
     let driver = Driver::new(p.USB, Irqs);
 
-    let mut selector_keyboard: Input<'_> = Input::new(r.selector_switch.selector_kb, Pull::None);
-    let mut selector_picoprog: Input<'_> = Input::new(r.selector_switch.selector_picocprog, Pull::None);
+    let selector_keyboard: Input<'_> = Input::new(r.selector_switch.selector_kb, Pull::None);
+    let selector_picoprog: Input<'_> = Input::new(r.selector_switch.selector_picocprog, Pull::None);
     let watchdog = Watchdog::new(p.WATCHDOG);
 
-    let mode: DeviceMode= if selector_keyboard.get_level() == Level::Low {
+    let mode: DeviceMode = if selector_keyboard.get_level() == Level::Low {
         defmt::info!("keyboard mode");
         DeviceMode::Keyboard
-    }
-    else if selector_picoprog.get_level() == Level::Low {
+    } else if selector_picoprog.get_level() == Level::Low {
+        defmt::info!("picoprog mode");
         DeviceMode::Picoprog
     } else {
         defmt::info!("neutral mode");
@@ -161,6 +158,8 @@ async fn main(spawner: Spawner) {
         builder
     };
 
+    spawner.spawn(led::led_task(r.led, mode)).unwrap();
+
     if !(matches!(mode, DeviceMode::Keyboard)) {
         let uart_class = {
             static STATE: StaticCell<CdcAcmState> = StaticCell::new();
@@ -174,8 +173,8 @@ async fn main(spawner: Spawner) {
             CdcAcmClass::new(&mut builder, state, 64)
         };
 
+        spawner.spawn(uart::uart_task(uart_class, r.uart)).unwrap();
         spawner.spawn(serprog_task(serprog_class, r.spi)).unwrap();
-        spawner.spawn(led::led_task(r.led, mode)).unwrap();
     }
 
     if !(matches!(mode, DeviceMode::Picoprog)) {
@@ -201,7 +200,13 @@ async fn main(spawner: Spawner) {
     let usb = builder.build();
     // We can't really recover here so just unwrap
     spawner.spawn(usb_task(usb)).unwrap();
-    spawner.spawn(selector_watchdog_task(watchdog, selector_keyboard,selector_picoprog)).unwrap();
+    spawner
+        .spawn(selector_watchdog_task(
+            watchdog,
+            selector_keyboard,
+            selector_picoprog,
+        ))
+        .unwrap();
 
     loop {
         embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
@@ -217,14 +222,18 @@ async fn usb_task(mut usb: CustomUsbDevice) -> ! {
 }
 
 #[embassy_executor::task]
-async fn selector_watchdog_task(mut watchdog: Watchdog, mut selector_keyboard: Input<'static>,mut selector_picoprog: Input<'static>) {
-        let (_, index) = select_array([
-            selector_keyboard.wait_for_any_edge(),
-            selector_picoprog.wait_for_any_edge(),
-        ])
-        .await;
+async fn selector_watchdog_task(
+    mut watchdog: Watchdog,
+    mut selector_keyboard: Input<'static>,
+    mut selector_picoprog: Input<'static>,
+) {
+    let (_, _) = select_array([
+        selector_keyboard.wait_for_any_edge(),
+        selector_picoprog.wait_for_any_edge(),
+    ])
+    .await;
 
-        watchdog.trigger_reset();
+    watchdog.trigger_reset();
 }
 
 #[embassy_executor::task]
@@ -251,7 +260,6 @@ async fn serprog_task(class: CdcAcmClass<'static, CustomUsbDriver>, r: SpiResour
     let serprog = serprog::Serprog::new(spi, cs, led, class, Some(set_freq_cb));
     serprog.run_loop().await
 }
-
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
