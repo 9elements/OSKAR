@@ -12,11 +12,13 @@ use embassy_sync::watch;
 use core::panic::PanicInfo;
 use cortex_m::peripheral::SCB;
 use defmt_rtt as _;
-use embassy_executor::Spawner;
-use embassy_futures::select::{select_array};
+use embassy_executor::{InterruptExecutor, Spawner};
+use embassy_futures::select::select_array;
 use embassy_rp::bind_interrupts;
 use embassy_rp::flash::{Async, Flash};
 use embassy_rp::gpio::{Input, Level, Output, Pull};
+use embassy_rp::interrupt;
+use embassy_rp::interrupt::{InterruptExt, Priority};
 use embassy_rp::peripherals::{self, PIO0, SPI0, USB};
 use embassy_rp::pio::InterruptHandler as PIOInterruptHandler;
 use embassy_rp::watchdog::{Watchdog};
@@ -85,9 +87,15 @@ pub enum DeviceMode{
     Universal,
 }
 
+// According to Serial Flasher Protocol Specification - version 1
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
-// According to Serial Flasher Protocol Specification - version 1
+static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
+
+#[interrupt]
+unsafe fn SWI_IRQ_1() {
+    unsafe { EXECUTOR_HIGH.on_interrupt() }
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -185,7 +193,9 @@ async fn main(spawner: Spawner) {
             HidReaderWriter::new(&mut builder, state, config)
         };
 
-        spawner.spawn(hid::hid_task(hid_class, r.hid)).unwrap();
+        interrupt::SWI_IRQ_1.set_priority(Priority::P1);
+        let spawner_high = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
+        spawner_high.spawn(hid::hid_task(hid_class, r.hid)).unwrap();
     }
 
     let usb = builder.build();
