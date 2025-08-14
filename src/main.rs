@@ -9,13 +9,11 @@ use assign_resources::assign_resources;
 use core::panic::PanicInfo;
 use cortex_m::peripheral::SCB;
 use defmt_rtt as _;
-use embassy_executor::{InterruptExecutor, Spawner};
+use embassy_executor::Spawner;
 use embassy_futures::select::select_array;
 use embassy_rp::bind_interrupts;
 use embassy_rp::flash::{Async, Flash};
 use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::interrupt;
-use embassy_rp::interrupt::{InterruptExt, Priority};
 use embassy_rp::peripherals::{self, PIO0, SPI0, USB};
 use embassy_rp::pio::InterruptHandler as PIOInterruptHandler;
 use embassy_rp::spi::{Config as SpiConfig, Spi};
@@ -25,13 +23,13 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcAcmState};
 use embassy_usb::class::hid::{HidReaderWriter, State as Hid_State};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
-// use embassy_usb::driver::EndpointError;
 use embassy_usb::{Config as UsbConfig, UsbDevice};
 use heapless::String;
 use static_cell::StaticCell;
 use ufmt::uwrite;
 
 mod hid;
+mod hid_codes;
 mod led;
 mod uart;
 bind_interrupts!(struct Irqs {
@@ -56,11 +54,14 @@ assign_resources! {
         led: PIN_25,
     }
 
-    hid: HidResources{
+    hid: ButtonResources{
         key1: PIN_19,
         key2: PIN_20,
         key3: PIN_21,
         encoder_button: PIN_13,
+    }
+
+    encoder: EncoderResources{
         encoder_right: PIN_14,
         encoder_left: PIN_12,
     }
@@ -87,12 +88,7 @@ pub enum DeviceMode {
 // According to Serial Flasher Protocol Specification - version 1
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
-static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
 
-#[interrupt]
-unsafe fn SWI_IRQ_1() {
-    unsafe { EXECUTOR_HIGH.on_interrupt() }
-}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -100,8 +96,8 @@ async fn main(spawner: Spawner) {
     let r: AssignedResources = split_resources!(p);
     let driver = Driver::new(p.USB, Irqs);
 
-    let selector_keyboard: Input<'_> = Input::new(r.selector_switch.selector_kb, Pull::None);
-    let selector_picoprog: Input<'_> = Input::new(r.selector_switch.selector_picocprog, Pull::None);
+    let selector_keyboard: Input<'_> = Input::new(r.selector_switch.selector_kb, Pull::Up);
+    let selector_picoprog: Input<'_> = Input::new(r.selector_switch.selector_picocprog, Pull::Up);
     let watchdog = Watchdog::new(p.WATCHDOG);
 
     let mode: DeviceMode = if selector_keyboard.get_level() == Level::Low {
@@ -192,9 +188,7 @@ async fn main(spawner: Spawner) {
             HidReaderWriter::new(&mut builder, state, config)
         };
 
-        interrupt::SWI_IRQ_1.set_priority(Priority::P1);
-        let spawner_high = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
-        spawner_high.spawn(hid::hid_task(hid_class, r.hid)).unwrap();
+        spawner.spawn(hid::hid_task(spawner, hid_class, r.hid, r.encoder)).unwrap();
     }
 
     let usb = builder.build();

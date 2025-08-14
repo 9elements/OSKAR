@@ -1,22 +1,115 @@
-use crate::HidResources;
+use crate::{EncoderResources, ButtonResources};
+use crate::hid_codes::Keyboard;
 use defmt::unreachable;
 use defmt_rtt as _;
+use embassy_executor::{InterruptExecutor, Spawner};
 use embassy_futures::select::select_array;
 use embassy_rp::gpio::{Input, Level, Pull};
+use embassy_rp::interrupt;
+use embassy_rp::interrupt::{InterruptExt, Priority};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
-use embassy_time::{Duration, with_timeout};
 use embassy_usb::class::hid::HidReaderWriter;
 use usbd_hid::descriptor::KeyboardReport;
+use embassy_sync::pubsub::PubSubChannel;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 type CustomHid = HidReaderWriter<'static, Driver<'static, USB>, 1, 8>;
+static KEY_EVENT_QUEUE: PubSubChannel::<CriticalSectionRawMutex, KeyEvent, 2, 2, 2> = PubSubChannel::new();
 
-enum Direction {
-    Left,
-    Right,
+#[derive(Clone)]
+#[derive(PartialEq)]
+enum Key {
+    EncoderLeft,
+    EncoderRight,
+    EncoderButton,
+    Key1,
+    Key2,
+    Key3,
+}
+
+#[derive(Clone)]
+#[derive(PartialEq)]
+enum Event {
+    Pressed,
+    Released,
+}
+#[derive(Clone)]
+struct KeyEvent {
+    key: Key,
+    event: Event,
 }
 
 #[embassy_executor::task]
-pub async fn hid_task(mut hid: CustomHid, r: HidResources) -> ! {
+pub async fn hid_task(spawner: Spawner, mut hid: CustomHid, button_resources: ButtonResources, encoder_resources: EncoderResources) -> ! {
+
+    interrupt::SWI_IRQ_0.set_priority(Priority::P2);
+    let spawner_encoder: embassy_executor::SendSpawner = EXECUTOR_ENCODER.start(interrupt::SWI_IRQ_0);
+    spawner_encoder.spawn(encoder_task(encoder_resources)).unwrap();
+
+    spawner.spawn(button_task(button_resources)).unwrap();
+
+    let mut sub = KEY_EVENT_QUEUE.subscriber().unwrap();
+
+
+    loop {
+        let key_event: KeyEvent = sub.next_message_pure().await;
+
+        match key_event.key {
+            Key::EncoderLeft => {
+                hid = handle_encoder_interaction(hid, Key::EncoderLeft).await;
+            },
+            Key::EncoderRight => {
+                hid = handle_encoder_interaction(hid, Key::EncoderRight).await;
+            },
+            Key::EncoderButton => {
+                hid = send_keycode(hid, Keyboard::Mute, key_event.event).await;
+            },
+            Key::Key1 => {
+                hid = send_keycode(hid, Keyboard::O, key_event.event).await;
+            },
+            Key::Key2 => {
+                hid = send_keycode(hid, Keyboard::S, key_event.event).await;
+            },
+            Key::Key3 => {
+                hid = send_keycode(hid, Keyboard::F,key_event.event).await;
+            }
+        }
+    }
+}
+
+
+static EXECUTOR_ENCODER: InterruptExecutor = InterruptExecutor::new();
+
+#[interrupt]
+unsafe fn SWI_IRQ_0() {
+    unsafe { EXECUTOR_ENCODER.on_interrupt() }
+}
+
+#[embassy_executor::task]
+pub async fn encoder_task(r: EncoderResources) -> ! {
+
+    let encoder_left: Input<'_> = Input::new(r.encoder_left, Pull::None);
+
+    let mut encoder_right: Input<'_> = Input::new(r.encoder_right, Pull::None);
+
+    let publisher = KEY_EVENT_QUEUE.publisher().unwrap();
+
+    loop {
+        encoder_right.wait_for_falling_edge().await;
+
+        if encoder_left.get_level() == Level::Low {
+            publisher.publish_immediate(KeyEvent {key: Key::EncoderLeft, event: Event::Pressed});
+        } else {
+            publisher.publish_immediate(KeyEvent {key: Key::EncoderRight, event: Event::Pressed});
+        };
+
+        encoder_right.wait_for_rising_edge().await;
+    }
+}
+
+#[embassy_executor::task]
+pub async fn button_task(r: ButtonResources) -> ! {
+
     let mut key1: Input<'_> = Input::new(r.key1, Pull::Up);
     key1.set_schmitt(true);
 
@@ -29,96 +122,71 @@ pub async fn hid_task(mut hid: CustomHid, r: HidResources) -> ! {
     let mut encoder_button: Input<'_> = Input::new(r.encoder_button, Pull::Up);
     encoder_button.set_schmitt(true);
 
-    let mut encoder_left: Input<'_> = Input::new(r.encoder_left, Pull::Up);
-
-    let mut encoder_right: Input<'_> = Input::new(r.encoder_right, Pull::Up);
+    let publisher = KEY_EVENT_QUEUE.publisher().unwrap();
 
     loop {
-        defmt::info!("HID: waiting for trigger...");
-
-        _ = with_timeout(Duration::from_millis(TIMEOUT), async {
-            encoder_left.wait_for_high()
-        })
-        .await;
 
         let (_, index) = select_array([
             key1.wait_for_any_edge(),
             key2.wait_for_any_edge(),
             key3.wait_for_any_edge(),
             encoder_button.wait_for_any_edge(),
-            encoder_right.wait_for_any_edge(),
         ])
         .await;
 
-        let keycode = match index {
+        match index {
             0 => {
-                defmt::info!("key1");
                 match key1.get_level() {
-                    Level::Low => 0x12,
-                    Level::High => 0x0,
+                    Level::Low => publisher.publish_immediate(KeyEvent {key: Key::Key1, event: Event::Pressed}),
+                    Level::High => publisher.publish_immediate(KeyEvent {key: Key::Key1, event: Event::Released}),
                 }
             }
             1 => {
-                defmt::info!("key2");
                 match key2.get_level() {
-                    Level::Low => 0x16,
-                    Level::High => 0x0,
+                    Level::Low => publisher.publish_immediate(KeyEvent {key: Key::Key2, event: Event::Pressed}),
+                    Level::High => publisher.publish_immediate(KeyEvent {key: Key::Key2, event: Event::Released}),
                 }
             }
             2 => {
-                defmt::info!("key3");
                 match key3.get_level() {
-                    Level::Low => 0x9,
-                    Level::High => 0x0,
+                    Level::Low => publisher.publish_immediate(KeyEvent {key: Key::Key3, event: Event::Pressed}),
+                    Level::High => publisher.publish_immediate(KeyEvent {key: Key::Key3, event: Event::Released}),
                 }
             }
             3 => {
-                defmt::info!("ecoder_button");
                 match encoder_button.get_level() {
-                    Level::Low => 0x7f,
-                    Level::High => 0x0,
+                    Level::Low => publisher.publish_immediate(KeyEvent {key: Key::EncoderButton, event: Event::Pressed}),
+                    Level::High => publisher.publish_immediate(KeyEvent {key: Key::EncoderButton, event: Event::Released}),
                 }
             }
-            4 => {
-                let edge = match encoder_right.get_level() {
-                    Level::Low => 0,
-                    Level::High => 1,
-                };
-
-                let state = match encoder_left.get_level() {
-                    Level::Low => 0,
-                    Level::High => 1,
-                };
-
-                let direction = if edge == state {
-                    Direction::Left
-                } else {
-                    Direction::Right
-                };
-
-                hid = handle_encoder_interaction(hid, direction).await;
-
-                continue;
-            }
-
             _ => unreachable!(),
         };
-
-        let keycodes: [u8; 6] = [keycode, 0, 0, 0, 0, 0];
-        send_report(&mut hid, keycodes).await;
     }
 }
 
-const TIMEOUT: u64 = 200;
 
-async fn handle_encoder_interaction(mut hid: CustomHid, direction: Direction) -> CustomHid {
+async fn handle_encoder_interaction(mut hid: CustomHid, direction: Key) -> CustomHid {
     let keycode = match direction {
-        Direction::Right => 0x80,
-        Direction::Left => 0x81,
+        Key::EncoderRight => Keyboard::VolumeUp as u8,
+        Key::EncoderLeft => Keyboard::VolumeDown as u8,
+        _ => return hid,
     };
 
     send_report(&mut hid, [keycode, 0, 0, 0, 0, 0]).await;
     send_report(&mut hid, [0, 0, 0, 0, 0, 0]).await;
+
+    return hid;
+}
+
+async fn send_keycode(mut hid: CustomHid, keycode: Keyboard, event: Event) -> CustomHid {
+
+    let keycodes: [u8; 6] = if event == Event::Pressed {
+        [keycode as u8, 0, 0, 0, 0, 0]
+    } else {
+        [0, 0, 0, 0, 0, 0]
+    };
+
+    send_report(&mut hid, keycodes).await;
     return hid;
 }
 
@@ -130,7 +198,6 @@ async fn send_report(hid: &mut CustomHid, keycodes: [u8; 6]) {
         reserved: 0,
     };
 
-    // Send the report
     if let Err(e) = hid.write_serialize(&report).await {
         log::error!("Failed to send HID key press: {:?}", e);
     }
