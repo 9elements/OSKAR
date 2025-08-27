@@ -1,5 +1,5 @@
 use crate::{EncoderResources, ButtonResources};
-use crate::hid_codes::Keyboard;
+use crate::hid_codes::{Keycode, KeyLayout};
 use defmt::unreachable;
 use defmt_rtt as _;
 use embassy_executor::{InterruptExecutor, Spawner};
@@ -39,6 +39,15 @@ struct KeyEvent {
     event: Event,
 }
 
+const KEYLAYOUT:KeyLayout = KeyLayout {
+    encoder_left: Keycode::VolumeDown,
+    encoder_right: Keycode::VolumeUp,
+    encoder_button: Keycode::Mute,
+    key1: Keycode::O,
+    key2: Keycode::S,
+    key3: Keycode::F,
+};
+
 #[embassy_executor::task]
 pub async fn hid_task(spawner: Spawner, mut hid: CustomHid, button_resources: ButtonResources, encoder_resources: EncoderResources) -> ! {
 
@@ -56,22 +65,22 @@ pub async fn hid_task(spawner: Spawner, mut hid: CustomHid, button_resources: Bu
 
         match key_event.key {
             Key::EncoderLeft => {
-                hid = handle_encoder_interaction(hid, Key::EncoderLeft).await;
+                hid = handle_encoder_interaction(hid, KEYLAYOUT.encoder_left).await;
             },
             Key::EncoderRight => {
-                hid = handle_encoder_interaction(hid, Key::EncoderRight).await;
+                hid = handle_encoder_interaction(hid, KEYLAYOUT.encoder_right).await;
             },
             Key::EncoderButton => {
-                hid = send_keycode(hid, Keyboard::Mute, key_event.event).await;
+                hid = send_keycode(hid, KEYLAYOUT.encoder_button, key_event.event).await;
             },
             Key::Key1 => {
-                hid = send_keycode(hid, Keyboard::O, key_event.event).await;
+                hid = send_keycode(hid, KEYLAYOUT.key1, key_event.event).await;
             },
             Key::Key2 => {
-                hid = send_keycode(hid, Keyboard::S, key_event.event).await;
+                hid = send_keycode(hid, KEYLAYOUT.key2, key_event.event).await;
             },
             Key::Key3 => {
-                hid = send_keycode(hid, Keyboard::F,key_event.event).await;
+                hid = send_keycode(hid, KEYLAYOUT.key3,key_event.event).await;
             }
         }
     }
@@ -165,20 +174,15 @@ pub async fn button_task(r: ButtonResources) -> ! {
 }
 
 
-async fn handle_encoder_interaction(mut hid: CustomHid, direction: Key) -> CustomHid {
-    let keycode = match direction {
-        Key::EncoderRight => Keyboard::VolumeUp as u8,
-        Key::EncoderLeft => Keyboard::VolumeDown as u8,
-        _ => return hid,
-    };
+async fn handle_encoder_interaction(mut hid: CustomHid, keycode: Keycode) -> CustomHid {
 
-    send_report(&mut hid, [keycode, 0, 0, 0, 0, 0]).await;
+    send_report(&mut hid, [keycode as u8, 0, 0, 0, 0, 0]).await;
     send_report(&mut hid, [0, 0, 0, 0, 0, 0]).await;
 
     return hid;
 }
 
-async fn send_keycode(mut hid: CustomHid, keycode: Keyboard, event: Event) -> CustomHid {
+async fn send_keycode(mut hid: CustomHid, keycode: Keycode, event: Event) -> CustomHid {
 
     let keycodes: [u8; 6] = if event == Event::Pressed {
         [keycode as u8, 0, 0, 0, 0, 0]

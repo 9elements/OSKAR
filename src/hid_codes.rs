@@ -1,12 +1,8 @@
-/// HID Keyboard Codes
-/// List of Keycodes - USB HID 1.12v2 pg 53
-/// 0xA5 to 0xAF are reserved
-/// 0xDE to 0xDF are reserved
-/// 0xE8 to 0xFF are reserved
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
 #[allow(dead_code)]
-pub enum Keyboard {
+pub enum Keycode {
     NoEvent = 0x00,
     ErrorRollOver = 0x01,
     PostFail = 0x02,
@@ -228,4 +224,13 @@ pub enum Keyboard {
     RightShift = 0xE5,
     RightAlt = 0xE6,
     RightGUI = 0xE7,
+}
+
+pub struct KeyLayout {
+    pub encoder_left: Keycode,
+    pub encoder_right: Keycode,
+    pub encoder_button: Keycode,
+    pub key1: Keycode,
+    pub key2: Keycode,
+    pub key3: Keycode,
 }
