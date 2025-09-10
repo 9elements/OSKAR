@@ -1,0 +1,6 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "Led-KeySwitch")(type "KiCad")(uri "${KIPRJMOD}/Libraries/KeySwitch Libraries/Led-KeySwitch.kicad_sym")(options "")(descr ""))
+  (lib (name "SK6812-E")(type "KiCad")(uri "${KIPRJMOD}/Libraries/SK6812-E/SK6812-E.kicad_sym")(options "")(descr ""))
+  (lib (name "SLW-1274547-4A-RA-D")(type "Legacy")(uri "${KIPRJMOD}/Libraries/Switch/SLW-1274547-4A-RA-D.lib")(options "")(descr ""))
+)
