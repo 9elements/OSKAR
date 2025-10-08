@@ -1,5 +1,5 @@
 use crate::{EncoderResources, ButtonResources};
-use crate::hid_codes::{Keycode, KeyLayout};
+use crate::layouts::{KeyLayout};
 use defmt::unreachable;
 use defmt_rtt as _;
 use embassy_executor::{InterruptExecutor, Spawner};
@@ -10,7 +10,7 @@ use embassy_rp::interrupt::{InterruptExt, Priority};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_usb::class::hid::HidReaderWriter;
-use usbd_hid::descriptor::KeyboardReport;
+use usbd_hid::descriptor::*;
 use embassy_sync::pubsub::PubSubChannel;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 type CustomHid = HidReaderWriter<'static, Driver<'static, USB>, 1, 8>;
@@ -39,17 +39,22 @@ struct KeyEvent {
     event: Event,
 }
 
+pub enum KeyType {
+    Media(MediaKey),
+    Keycode(KeyboardUsage),
+}
+
 const KEYLAYOUT:KeyLayout = KeyLayout {
-    encoder_left: Keycode::VolumeDown,
-    encoder_right: Keycode::VolumeUp,
-    encoder_button: Keycode::Mute,
-    key1: Keycode::O,
-    key2: Keycode::S,
-    key3: Keycode::F,
+    encoder_left: KeyType::Media(MediaKey::VolumeDecrement),
+    encoder_right: KeyType::Media(MediaKey::VolumeIncrement),
+    encoder_button: KeyType::Media(MediaKey::Mute),
+    key1: KeyType::Keycode(KeyboardUsage::KeyboardOo),
+    key2: KeyType::Keycode(KeyboardUsage::KeyboardSs),
+    key3: KeyType::Keycode(KeyboardUsage::KeyboardFf),
 };
 
 #[embassy_executor::task]
-pub async fn hid_task(spawner: Spawner, mut hid: CustomHid, button_resources: ButtonResources, encoder_resources: EncoderResources) -> ! {
+pub async fn hid_task(spawner: Spawner, mut keyboard_class: CustomHid, mut multimedia_class: CustomHid, button_resources: ButtonResources, encoder_resources: EncoderResources) -> ! {
 
     interrupt::SWI_IRQ_0.set_priority(Priority::P2);
     let spawner_encoder: embassy_executor::SendSpawner = EXECUTOR_ENCODER.start(interrupt::SWI_IRQ_0);
@@ -59,28 +64,27 @@ pub async fn hid_task(spawner: Spawner, mut hid: CustomHid, button_resources: Bu
 
     let mut sub = KEY_EVENT_QUEUE.subscriber().unwrap();
 
-
     loop {
         let key_event: KeyEvent = sub.next_message_pure().await;
 
         match key_event.key {
             Key::EncoderLeft => {
-                hid = handle_encoder_interaction(hid, KEYLAYOUT.encoder_left).await;
+                (keyboard_class, multimedia_class) = handle_encoder_interaction(keyboard_class, multimedia_class, KEYLAYOUT.encoder_left).await;
             },
             Key::EncoderRight => {
-                hid = handle_encoder_interaction(hid, KEYLAYOUT.encoder_right).await;
+                (keyboard_class, multimedia_class) = handle_encoder_interaction(keyboard_class, multimedia_class, KEYLAYOUT.encoder_right).await;
             },
             Key::EncoderButton => {
-                hid = send_keycode(hid, KEYLAYOUT.encoder_button, key_event.event).await;
+                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.encoder_button, key_event.event).await;
             },
             Key::Key1 => {
-                hid = send_keycode(hid, KEYLAYOUT.key1, key_event.event).await;
+                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key1, key_event.event).await;
             },
             Key::Key2 => {
-                hid = send_keycode(hid, KEYLAYOUT.key2, key_event.event).await;
+                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key2, key_event.event).await;
             },
             Key::Key3 => {
-                hid = send_keycode(hid, KEYLAYOUT.key3,key_event.event).await;
+                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key3,key_event.event).await;
             }
         }
     }
@@ -174,35 +178,93 @@ pub async fn button_task(r: ButtonResources) -> ! {
 }
 
 
-async fn handle_encoder_interaction(mut hid: CustomHid, keycode: Keycode) -> CustomHid {
+async fn handle_encoder_interaction(mut keyboard_class: CustomHid, mut media_class: CustomHid, code: KeyType) -> (CustomHid, CustomHid) {
 
-    send_report(&mut hid, [keycode as u8, 0, 0, 0, 0, 0]).await;
-    send_report(&mut hid, [0, 0, 0, 0, 0, 0]).await;
+    match code {
+        KeyType::Media(media_key) =>    {
 
-    return hid;
-}
+            let mut report = MediaKeyboardReport {
+                usage_id: media_key as u16,
+            };
 
-async fn send_keycode(mut hid: CustomHid, keycode: Keycode, event: Event) -> CustomHid {
+            if let Err(e) = media_class.write_serialize(&report).await {
+                log::error!("Failed to send HID key press: {:?}", e);
+            }
 
-    let keycodes: [u8; 6] = if event == Event::Pressed {
-        [keycode as u8, 0, 0, 0, 0, 0]
-    } else {
-        [0, 0, 0, 0, 0, 0]
+            report = MediaKeyboardReport {
+                usage_id: 0x00 as u16,
+            };
+
+            if let Err(e) = media_class.write_serialize(&report).await {
+                log::error!("Failed to send HID key press: {:?}", e);
+            }
+        },
+
+        KeyType::Keycode(keyboard_usage) => {
+            let keycodes: [u8; 6] = [keyboard_usage as u8, 0, 0, 0, 0, 0];
+
+            let mut report: KeyboardReport = KeyboardReport {
+                keycodes: keycodes,
+                leds: 0,
+                modifier: 0,
+                reserved: 0,
+            };
+
+            if let Err(e) = keyboard_class.write_serialize(&report).await {
+                log::error!("Failed to send HID key press: {:?}", e);
+            }
+
+            report.keycodes = [0,0,0,0,0,0];
+
+            if let Err(e) = keyboard_class.write_serialize(&report).await {
+                log::error!("Failed to send HID key press: {:?}", e);
+            }
+        },
     };
 
-    send_report(&mut hid, keycodes).await;
-    return hid;
+
+
+    return (keyboard_class, media_class)
 }
 
-async fn send_report(hid: &mut CustomHid, keycodes: [u8; 6]) {
-    let report = KeyboardReport {
-        keycodes: keycodes,
-        leds: 0,
-        modifier: 0,
-        reserved: 0,
+async fn send_code(mut keyboard_class: CustomHid, mut media_class: CustomHid , code: KeyType, event: Event) -> (CustomHid, CustomHid) {
+
+    match code {
+        KeyType::Media(media_key) =>    {
+
+            let code = match event {
+                Event::Pressed => media_key as u16,
+                Event::Released => 0x00 as u16,
+            };
+
+            let report = MediaKeyboardReport {
+                usage_id: code,
+            };
+
+            if let Err(e) = media_class.write_serialize(&report).await {
+                log::error!("Failed to send HID key press: {:?}", e);
+            }
+        },
+
+        KeyType::Keycode(keyboard_usage) => {
+            let keycodes: [u8; 6] = if event == Event::Pressed {
+                [keyboard_usage as u8, 0, 0, 0, 0, 0]
+            } else {
+                [0, 0, 0, 0, 0, 0]
+            };
+
+            let report: KeyboardReport = KeyboardReport {
+                keycodes: keycodes,
+                leds: 0,
+                modifier: 0,
+                reserved: 0,
+            };
+
+            if let Err(e) = keyboard_class.write_serialize(&report).await {
+                log::error!("Failed to send HID key press: {:?}", e);
+            }
+        },
     };
 
-    if let Err(e) = hid.write_serialize(&report).await {
-        log::error!("Failed to send HID key press: {:?}", e);
-    }
+    return (keyboard_class, media_class);
 }
