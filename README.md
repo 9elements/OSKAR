@@ -33,8 +33,7 @@ Build the firmware:
 cargo run --release
 ```
 
-3. The compiled binary will be located in:
-   `target/thumbv6m-none-eabi/release` directory
+3. The compiled binary will be located in the `target/thumbv6m-none-eabi/release` directory.
 
 ## Flashing the Firmware
 
@@ -46,7 +45,7 @@ To flash the firmware onto the Raspberry Pi Pico, follow these steps:
 
 ```sh
 # Linux
-cp target/thumbv6m-none-eabi/release/picoprog.uf2 /media/$USER/RPI-RP2/
+cp target/thumbv6m-none-eabi/release/oskar.uf2 /path/to/pi/volume
 
 # macOS
 cp target/thumbv6m-none-eabi/release/picoprog.uf2 /Volumes/RPI-RP2/
@@ -65,34 +64,34 @@ The Device features a 3-position selection switch on its left side. When the swi
 The standard firmware of the Keyboard hase the encoder configured as volume knob with mute on press.
 The keys 1-3 (from left to right) are configured as o s and f (for open source firmware).
 
-At the top of the file `src/hid.rs` there is a constant struct called ```KEYLAYOUT```
+At the top of the file `src/hid.rs` there is a constant struct called ```KEYLAYOUT```.
 
 ```rust
 const KEYLAYOUT:KeyLayout = KeyLayout {
-    encoder_left: Keycode::VolumeDown,
-    encoder_right: Keycode::VolumeUp,
-    encoder_button: Keycode::Mute,
-    key1: Keycode::O,
-    key2: Keycode::S,
-    key3: Keycode::F,
+    encoder_left: KeyType::Media(MediaKey::VolumeDecrement),
+    encoder_right: KeyType::Media(MediaKey::VolumeIncrement),
+    encoder_button: KeyType::Media(MediaKey::Mute),
+    key1: KeyType::Keycode(KeyboardUsage::KeyboardOo),
+    key2: KeyType::Keycode(KeyboardUsage::KeyboardSs),
+    key3: KeyType::Keycode(KeyboardUsage::KeyboardFf),
 };
 ```
 
-The struct holds the current configuration of the Keyboard, each key can be configured to any keycode of the enum ```keycode``` located in `src/hid_codes.rs`
+The struct holds the current configuration of the Keyboard, each key can be configured to any keycode of the enum ```KeyType``` located in `src/hid_codes.rs`
 for example:
 
 ```rust
 const KEYLAYOUT:KeyLayout = KeyLayout {
-    encoder_left: Keycode::VolumeDown,
-    encoder_right: Keycode::VolumeUp,
-    encoder_button: Keycode::Mute,
-    key1: Keycode::F13,
-    key2: Keycode::F14,
-    key3: Keycode::F15,
+    encoder_left: KeyType::Media(MediaKey::VolumeDecrement),
+    encoder_right: KeyType::Media(MediaKey::VolumeIncrement),
+    encoder_button: KeyType::Media(MediaKey::Mute),
+    key1: KeyType::Keycode(KeyboardUsage::KeyboardF10),
+    key2: KeyType::Keycode(KeyboardUsage::KeyboardF11),
+    key3: KeyType::Keycode(KeyboardUsage::KeyboardF12),
 };
 ```
-Wich could then be used to be configured as hotkeys in your operating system.
 
+Wich could then be used to be configured as hotkeys in your operating system.
 
 ### Serial (picocom or combined mode)
 
