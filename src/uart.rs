@@ -1,13 +1,15 @@
 use embassy_futures::join::join;
-use embassy_rp::peripherals::USB;
-use embassy_rp::pio::{Instance as PioInstance, Pio};
-use embassy_rp::pio_programs::uart::{PioUartRx, PioUartRxProgram, PioUartTx, PioUartTxProgram};
-use embassy_rp::usb::Driver;
-use embassy_rp::usb::Instance as UsbInstance;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::pipe::{Pipe, Reader, Writer};
-use embassy_usb::class::cdc_acm::CdcAcmClass;
-use embassy_usb::driver::EndpointError;
+use embassy_rp::{
+    peripherals::USB,
+    pio::{Instance as PioInstance, Pio},
+    pio_programs::uart::{PioUartRx, PioUartRxProgram, PioUartTx, PioUartTxProgram},
+    usb::{Driver, Instance as UsbInstance},
+};
+use embassy_sync::{
+    blocking_mutex::raw::NoopRawMutex,
+    pipe::{Pipe, Reader, Writer},
+};
+use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError};
 
 use crate::UartResources;
 

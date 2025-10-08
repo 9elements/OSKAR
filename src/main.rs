@@ -88,8 +88,6 @@ pub enum DeviceMode {
 // According to Serial Flasher Protocol Specification - version 1
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
-
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p: embassy_rp::Peripherals = embassy_rp::init(Default::default());
@@ -142,7 +140,7 @@ async fn main(spawner: Spawner) {
         static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
         static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
         static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
-        static MSOS_DESCRIPTOR: StaticCell <[u8; 256]> = StaticCell::new();
+        static MSOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 
         let builder = embassy_usb::Builder::new(
             driver,
@@ -203,7 +201,15 @@ async fn main(spawner: Spawner) {
             HidReaderWriter::new(&mut builder, state, config)
         };
 
-        spawner.spawn(hid::hid_task(spawner, keyboard_class, multimedia_class, r.hid, r.encoder)).unwrap();
+        spawner
+            .spawn(hid::hid_task(
+                spawner,
+                keyboard_class,
+                multimedia_class,
+                r.hid,
+                r.encoder,
+            ))
+            .unwrap();
     }
 
     let usb = builder.build();

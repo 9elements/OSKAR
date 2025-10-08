@@ -10,6 +10,10 @@ bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
 });
 
+const COLOR_RED: RGB8 = RGB8 { r: 10, g: 0, b: 0 };
+const COLOR_GREEN: RGB8 = RGB8 { r: 10, g: 10, b: 0 };
+const COLOR_PURPLE: RGB8 = RGB8 { r: 14, g: 4, b: 13 };
+
 #[embassy_executor::task]
 pub async fn led_task(r: LedResources, mode: DeviceMode) -> ! {
     let Pio {
@@ -19,9 +23,9 @@ pub async fn led_task(r: LedResources, mode: DeviceMode) -> ! {
     const NUM_LEDS: usize = 4;
     let mut data = [RGB8::default(); NUM_LEDS];
     data[3] = match mode {
-        DeviceMode::Keyboard => red(),
-        DeviceMode::Universal => purple(),
-        DeviceMode::Picoprog => green(),
+        DeviceMode::Keyboard => COLOR_RED,
+        DeviceMode::Universal => COLOR_PURPLE,
+        DeviceMode::Picoprog => COLOR_GREEN,
     };
 
     let program = PioWs2812Program::new(&mut common);
@@ -30,7 +34,6 @@ pub async fn led_task(r: LedResources, mode: DeviceMode) -> ! {
     let mut ticker = Ticker::every(Duration::from_millis(10));
     loop {
         for j in 0..(256 * 5) {
-            // debug!("New Colors:");
             for i in 0..NUM_LEDS - 1 {
                 data[i] =
                     wheel((((i * 256) as u16 / (NUM_LEDS - 1) as u16 + j as u16) & 255) as u8);
@@ -53,16 +56,4 @@ fn wheel(mut wheel_pos: u8) -> RGB8 {
     }
     wheel_pos -= 170;
     (wheel_pos * 3, 255 - wheel_pos * 3, 0).into()
-}
-
-fn red() -> RGB8 {
-    return (10, 0, 0).into();
-}
-
-fn green() -> RGB8 {
-    return (0, 10, 0).into();
-}
-
-fn purple() -> RGB8 {
-    return (14, 4, 13).into();
 }
