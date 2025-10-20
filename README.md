@@ -1,6 +1,6 @@
 # Open Source Keyboard Appliance powered by Rust
 
-OSKAR is a firmware for the Raspberry Pi Pico it combines the 9elements picoprog project and additional Hid code into a firmware for our multi-feature Makro-Keypad.
+OSKAR is a firmware for the Raspberry Pi Pico that combines the 9elements picoprog project and additional HID code into a firmware for our multi-feature Macro-Keypad.
 ## Prerequisites
 
 Before you can compile and use OSKAR, you need to install the following dependencies:
@@ -27,7 +27,7 @@ git clone https://github.com/9elements/OSKAR.git
 cd OSKAR
 ```
 
-Build the firmware:
+2. Build the firmware:
 
 ```sh
 cargo run --release
@@ -48,7 +48,7 @@ To flash the firmware onto the Raspberry Pi Pico, follow these steps:
 cp target/thumbv6m-none-eabi/release/oskar.uf2 /path/to/pi/volume
 
 # macOS
-cp target/thumbv6m-none-eabi/release/picoprog.uf2 /Volumes/RPI-RP2/
+cp target/thumbv6m-none-eabi/release/oskar.uf2 /Volumes/RPI-RP2/
 ```
 
 3. The Pico will automatically reboot and start running the new firmware.
@@ -57,11 +57,11 @@ cp target/thumbv6m-none-eabi/release/picoprog.uf2 /Volumes/RPI-RP2/
 
 ### Modes
 
-The Device features a 3-position selection switch on its left side. When the switch is moved all the way to the back it simply acts ats the picoprog featuring SPI and UART capabillities (Green LED). Moved all the way to the fromt it acts as Macro Keyboard (Red LED). With the switch in the middle position the device combines Both features at once (purple led).
+The Device features a 3-position selection switch on its left side. When the switch is moved all the way to the back it simply acts as the picoprog featuring SPI and UART capabilities (Green LED). Moved all the way to the front it acts as a Macro Keyboard (Red LED). With the switch in the middle position the device combines both features at once (purple LED).
 
-### Makro Keyboard
+### Macro Keyboard
 
-The standard firmware of the Keyboard hase the encoder configured as volume knob with mute on press.
+The standard firmware of the Keyboard has the encoder configured as volume knob with mute on press.
 The keys 1-3 (from left to right) are configured as o s and f (for open source firmware).
 
 At the top of the file `src/hid.rs` there is a constant struct called ```KEYLAYOUT```.
@@ -91,11 +91,11 @@ const KEYLAYOUT:KeyLayout = KeyLayout {
 };
 ```
 
-Wich could then be used to be configured as hotkeys in your operating system.
+Which could then be used to be configured as hotkeys in your operating system.
 
 ### Serial (picocom or combined mode)
 
-Once the firmware is running, you can use any terminal program to communicate with the UART and SPI peripherals via USB. The device will appear as a USB CDC (Communications Device Class) device. Currently `/dev/ttyACM0` (macOS: `/dev/tty.usbmodemOSFC20241`) is a debug console that prints information about the picos current operation.
+Once the firmware is running, you can use any terminal program to communicate with the UART and SPI peripherals via USB. The device will appear as a USB CDC (Communications Device Class) device. Currently `/dev/ttyACM0` (macOS: `/dev/tty.usbmodemOSFC20241`) is a debug console that prints information about the Pico's current operation.
 
 ### UART Communication (picocom or combined mode)
 
@@ -103,7 +103,7 @@ To communicate with the UART peripheral, open the corresponding serial port (e.g
 
 ### Using Flashrom or Flashprog (picocom or combined mode)
 
-To interact with the Raspberry Pi Pico in for reading and writing SPI flash chips, you can use tools like `flashrom` or `flashprog`. These tools support the `serprog` protocol, which allows communication over a serial interface.
+To interact with the Raspberry Pi Pico for reading and writing SPI flash chips, you can use tools like `flashrom` or `flashprog`. These tools support the `serprog` protocol, which allows communication over a serial interface.
 
 1. Install `flashrom` or `flashprog` e.g.:
 
