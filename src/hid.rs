@@ -39,6 +39,7 @@ struct KeyEvent {
     event: Event,
 }
 
+#[allow(unused)]
 pub enum KeyType {
     Media(MediaKey),
     Keycode(KeyboardUsage),
@@ -48,9 +49,9 @@ const KEYLAYOUT:KeyLayout = KeyLayout {
     encoder_left: KeyType::Media(MediaKey::VolumeDecrement),
     encoder_right: KeyType::Media(MediaKey::VolumeIncrement),
     encoder_button: KeyType::Media(MediaKey::Mute),
-    key1: KeyType::Keycode(KeyboardUsage::KeyboardOo),
-    key2: KeyType::Keycode(KeyboardUsage::KeyboardSs),
-    key3: KeyType::Keycode(KeyboardUsage::KeyboardFf),
+    key1: KeyType::Media(MediaKey::PrevTrack),
+    key2: KeyType::Media(MediaKey::PlayPause),
+    key3: KeyType::Media(MediaKey::NextTrack),
 };
 
 #[embassy_executor::task]
