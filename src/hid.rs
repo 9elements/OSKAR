@@ -16,8 +16,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 type CustomHid = HidReaderWriter<'static, Driver<'static, USB>, 1, 8>;
 static KEY_EVENT_QUEUE: PubSubChannel::<CriticalSectionRawMutex, KeyEvent, 2, 2, 2> = PubSubChannel::new();
 
-#[derive(Clone)]
-#[derive(PartialEq)]
+
+#[derive(Clone, Copy, PartialEq)]
 enum Key {
     EncoderLeft,
     EncoderRight,
@@ -27,25 +27,25 @@ enum Key {
     Key3,
 }
 
-#[derive(Clone)]
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Event {
     Pressed,
     Released,
 }
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct KeyEvent {
     key: Key,
     event: Event,
 }
 
 #[allow(unused)]
+#[derive(Clone, Copy)]
 pub enum KeyType {
     Media(MediaKey),
     Keycode(KeyboardUsage),
 }
 
-const KEYLAYOUT:KeyLayout = KeyLayout {
+const MULTIMEDIA_LAYOUT:KeyLayout = KeyLayout {
     encoder_left: KeyType::Media(MediaKey::VolumeDecrement),
     encoder_right: KeyType::Media(MediaKey::VolumeIncrement),
     encoder_button: KeyType::Media(MediaKey::Mute),
@@ -54,9 +54,29 @@ const KEYLAYOUT:KeyLayout = KeyLayout {
     key3: KeyType::Media(MediaKey::NextTrack),
 };
 
-#[embassy_executor::task]
-pub async fn hid_task(spawner: Spawner, mut keyboard_class: CustomHid, mut multimedia_class: CustomHid, button_resources: ButtonResources, encoder_resources: EncoderResources) -> ! {
+const CHRISTMAS_LAYOUT:KeyLayout = KeyLayout {
+    encoder_left: KeyType::Keycode(KeyboardUsage::KeyboardLeftArrow),
+    encoder_right: KeyType::Keycode(KeyboardUsage::KeyboardRightArrow),
+    encoder_button: KeyType::Keycode(KeyboardUsage::KeyboardSpacebar),
+    key1: KeyType::Keycode(KeyboardUsage::KeyboardLeftArrow),
+    key2: KeyType::Keycode(KeyboardUsage::KeyboardSpacebar),
+    key3: KeyType::Keycode(KeyboardUsage::KeyboardRightArrow),
+};
 
+pub enum LayoutMode {
+    Multimedia,
+    Christmas,
+}
+
+#[embassy_executor::task]
+pub async fn hid_task(
+    spawner: Spawner,
+    mut keyboard_class: CustomHid,
+    mut multimedia_class: CustomHid,
+    button_resources: ButtonResources,
+    encoder_resources: EncoderResources,
+    layout_mode: LayoutMode,
+) -> ! {
     interrupt::SWI_IRQ_0.set_priority(Priority::P2);
     let spawner_encoder: embassy_executor::SendSpawner = EXECUTOR_ENCODER.start(interrupt::SWI_IRQ_0);
     spawner_encoder.spawn(encoder_task(encoder_resources)).unwrap();
@@ -65,27 +85,32 @@ pub async fn hid_task(spawner: Spawner, mut keyboard_class: CustomHid, mut multi
 
     let mut sub = KEY_EVENT_QUEUE.subscriber().unwrap();
 
+    let keylayout = match layout_mode {
+        LayoutMode::Multimedia => &MULTIMEDIA_LAYOUT,
+        LayoutMode::Christmas => &CHRISTMAS_LAYOUT,
+    };
+
     loop {
         let key_event: KeyEvent = sub.next_message_pure().await;
 
         match key_event.key {
             Key::EncoderLeft => {
-                (keyboard_class, multimedia_class) = handle_encoder_interaction(keyboard_class, multimedia_class, KEYLAYOUT.encoder_left).await;
+                (keyboard_class, multimedia_class) = handle_encoder_interaction(keyboard_class, multimedia_class, keylayout.encoder_left).await;
             },
             Key::EncoderRight => {
-                (keyboard_class, multimedia_class) = handle_encoder_interaction(keyboard_class, multimedia_class, KEYLAYOUT.encoder_right).await;
+                (keyboard_class, multimedia_class) = handle_encoder_interaction(keyboard_class, multimedia_class, keylayout.encoder_right).await;
             },
             Key::EncoderButton => {
-                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.encoder_button, key_event.event).await;
+                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, keylayout.encoder_button, key_event.event).await;
             },
             Key::Key1 => {
-                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key1, key_event.event).await;
+                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, keylayout.key1, key_event.event).await;
             },
             Key::Key2 => {
-                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key2, key_event.event).await;
+                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, keylayout.key2, key_event.event).await;
             },
             Key::Key3 => {
-                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key3,key_event.event).await;
+                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, keylayout.key3, key_event.event).await;
             }
         }
     }

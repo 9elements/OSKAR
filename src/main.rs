@@ -73,16 +73,16 @@ assign_resources! {
     }
 
     selector_switch: ModeSwitchRessources{
-        selector_kb: PIN_16,
-        selector_picocprog: PIN_17,
+        selector_pos1: PIN_16,
+        selector_pos3: PIN_17,
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum DeviceMode {
-    Keyboard,
-    Picoprog,
-    Universal,
+pub enum SelectorPosition {
+    Position1,
+    Position2,
+    Position3,
 }
 
 // According to Serial Flasher Protocol Specification - version 1
@@ -96,19 +96,20 @@ async fn main(spawner: Spawner) {
     let r: AssignedResources = split_resources!(p);
     let driver = Driver::new(p.USB, Irqs);
 
-    let selector_keyboard: Input<'_> = Input::new(r.selector_switch.selector_kb, Pull::Up);
-    let selector_picoprog: Input<'_> = Input::new(r.selector_switch.selector_picocprog, Pull::Up);
+    let selector_pos1: Input<'_> = Input::new(r.selector_switch.selector_pos1, Pull::Up);
+    let selector_pos3: Input<'_> = Input::new(r.selector_switch.selector_pos3, Pull::Up);
     let watchdog = Watchdog::new(p.WATCHDOG);
 
-    let mode: DeviceMode = if selector_keyboard.get_level() == Level::Low {
-        defmt::info!("keyboard mode");
-        DeviceMode::Keyboard
-    } else if selector_picoprog.get_level() == Level::Low {
-        defmt::info!("picoprog mode");
-        DeviceMode::Picoprog
+    // Switch position logic: pos1 (PIN_16), pos3 (PIN_17), else pos2 (middle)
+    let mode: SelectorPosition = if selector_pos1.get_level() == Level::Low {
+        defmt::info!("Switch position 1");
+        SelectorPosition::Position1
+    } else if selector_pos3.get_level() == Level::Low {
+        defmt::info!("Switch position 3");
+        SelectorPosition::Position3
     } else {
-        defmt::info!("neutral mode");
-        DeviceMode::Universal
+        defmt::info!("Switch position 2 (middle)");
+        SelectorPosition::Position2
     };
 
     let mut flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH4);
@@ -157,7 +158,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(led::led_task(r.led, mode)).unwrap();
 
-    if !(matches!(mode, DeviceMode::Keyboard)) {
+    // if !(matches!(mode, SelectorPosition::Position1)) {
         let uart_class = {
             static STATE: StaticCell<CdcAcmState> = StaticCell::new();
             let state = STATE.init(CdcAcmState::new());
@@ -172,9 +173,9 @@ async fn main(spawner: Spawner) {
 
         spawner.spawn(uart::uart_task(uart_class, r.uart)).unwrap();
         spawner.spawn(serprog_task(serprog_class, r.spi)).unwrap();
-    }
+    // }
 
-    if !(matches!(mode, DeviceMode::Picoprog)) {
+    // if !(matches!(mode, SelectorPosition::Position3)) {
         let keyboard_class: HidReaderWriter<'_, Driver<'_, USB>, 1, 8> = {
             static STATE: StaticCell<Hid_State> = StaticCell::new();
             let state = STATE.init(Hid_State::new());
@@ -203,8 +204,14 @@ async fn main(spawner: Spawner) {
             HidReaderWriter::new(&mut builder, state, config)
         };
 
-        spawner.spawn(hid::hid_task(spawner, keyboard_class, multimedia_class, r.hid, r.encoder)).unwrap();
-    }
+        // Map selector position to layout mode for hid_task
+        let layout_mode = match mode {
+            SelectorPosition::Position1 => hid::LayoutMode::Multimedia,
+            SelectorPosition::Position3 => hid::LayoutMode::Christmas,
+            SelectorPosition::Position2 => hid::LayoutMode::Multimedia, // Default/fallback, adjust as needed
+        };
+        spawner.spawn(hid::hid_task(spawner, keyboard_class, multimedia_class, r.hid, r.encoder, layout_mode)).unwrap();
+    // }
 
     let usb = builder.build();
     // We can't really recover here so just unwrap
@@ -212,8 +219,8 @@ async fn main(spawner: Spawner) {
     spawner
         .spawn(selector_watchdog_task(
             watchdog,
-            selector_keyboard,
-            selector_picoprog,
+            selector_pos1,
+            selector_pos3,
         ))
         .unwrap();
 
@@ -233,12 +240,12 @@ async fn usb_task(mut usb: CustomUsbDevice) -> ! {
 #[embassy_executor::task]
 async fn selector_watchdog_task(
     mut watchdog: Watchdog,
-    mut selector_keyboard: Input<'static>,
-    mut selector_picoprog: Input<'static>,
+    mut selector_pos1: Input<'static>,
+    mut selector_pos3: Input<'static>,
 ) {
     let (_, _) = select_array([
-        selector_keyboard.wait_for_any_edge(),
-        selector_picoprog.wait_for_any_edge(),
+        selector_pos1.wait_for_any_edge(),
+        selector_pos3.wait_for_any_edge(),
     ])
     .await;
 

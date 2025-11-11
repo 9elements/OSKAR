@@ -1,4 +1,18 @@
-use crate::{DeviceMode, LedResources};
+// LED color abstraction
+enum LedColor {
+    Red,
+    Green,
+    Purple,
+}
+
+fn led_color_rgb(color: LedColor) -> RGB8 {
+    match color {
+        LedColor::Red => (10, 0, 0).into(),
+        LedColor::Green => (0, 10, 0).into(),
+        LedColor::Purple => (14, 4, 13).into(),
+    }
+}
+use crate::{SelectorPosition, LedResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::PIO1;
 use embassy_rp::pio::{InterruptHandler, Pio};
@@ -11,18 +25,19 @@ bind_interrupts!(struct Irqs {
 });
 
 #[embassy_executor::task]
-pub async fn led_task(r: LedResources, mode: DeviceMode) -> ! {
+pub async fn led_task(r: LedResources, mode: SelectorPosition) -> ! {
     let Pio {
         mut common, sm0, ..
     } = Pio::new(r.peripheral, Irqs);
 
     const NUM_LEDS: usize = 4;
     let mut data = [RGB8::default(); NUM_LEDS];
-    data[3] = match mode {
-        DeviceMode::Keyboard => red(),
-        DeviceMode::Universal => purple(),
-        DeviceMode::Picoprog => green(),
+    let led_color = match mode {
+        SelectorPosition::Position1 => LedColor::Red,
+        SelectorPosition::Position2 => LedColor::Purple,
+        SelectorPosition::Position3 => LedColor::Green,
     };
+    data[3] = led_color_rgb(led_color);
 
     let program = PioWs2812Program::new(&mut common);
     let mut ws2812 = PioWs2812::new(&mut common, sm0, r.led_dma, r.led_gpio, &program);
@@ -55,14 +70,4 @@ fn wheel(mut wheel_pos: u8) -> RGB8 {
     (wheel_pos * 3, 255 - wheel_pos * 3, 0).into()
 }
 
-fn red() -> RGB8 {
-    return (10, 0, 0).into();
-}
 
-fn green() -> RGB8 {
-    return (0, 10, 0).into();
-}
-
-fn purple() -> RGB8 {
-    return (14, 4, 13).into();
-}
