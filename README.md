@@ -1,6 +1,7 @@
 # Open Source Keyboard Appliance powered by Rust
 
 OSKAR is a firmware for the Raspberry Pi Pico that combines the 9elements picoprog project and additional HID code into a firmware for our multi-feature Macro-Keypad.
+
 ## Prerequisites
 
 Before you can compile and use OSKAR, you need to install the following dependencies:
@@ -55,43 +56,77 @@ cp target/thumbv6m-none-eabi/release/oskar.uf2 /Volumes/RPI-RP2/
 
 ## Usage
 
-### Modes
+### Layout Selection
 
-The Device features a 3-position selection switch on its left side. When the switch is moved all the way to the back it simply acts as the picoprog featuring SPI and UART capabilities (Green LED). Moved all the way to the front it acts as a Macro Keyboard (Red LED). With the switch in the middle position the device combines both features at once (purple LED).
+OSKAR features a state machine that manages three different keyboard layouts. The device uses two selector switches (PIN_16 and PIN_17) to cycle between layouts. Each layout has its own LED color indicator and key configuration.
 
-### Macro Keyboard
+#### Pre-Configured Layouts
 
-The standard firmware of the Keyboard has the encoder configured as volume knob with mute on press.
-The keys 1-3 (from left to right) are configured as o s and f (for open source firmware).
+The firmware ships with three pre-configured layouts (fully customizable in `src/layouts.rs`):
 
-At the top of the file `src/hid.rs` there is a constant struct called ```KEYLAYOUT```.
+**Layout 1 - OFF (Black LED)**
+
+- Keyboard input disabled
+- All keys inactive
+- LED off (RGB: 0, 0, 0)
+
+**Layout 2 - Navigation (Red LED)**
+
+- Encoder: Volume control (rotate) + Mute (press)
+- Key 1: Left Arrow
+- Key 2: Spacebar
+- Key 3: Right Arrow
+- LED color: Red (RGB: 10, 0, 0)
+- Ideal for presentations or video playback
+
+**Layout 3 - Media Control (Purple LED)**
+
+- Encoder: Volume control (rotate) + Mute (press)
+- Key 1: Previous Track
+- Key 2: Play/Pause
+- Key 3: Next Track
+- LED color: Purple (RGB: 14, 4, 13)
+- Perfect for music and video control
+
+### Customizing Layouts
+
+Layouts are defined in `src/layouts.rs`. Each layout is a constant struct of type `KeyLayout`:
 
 ```rust
-const KEYLAYOUT:KeyLayout = KeyLayout {
+pub const LAYOUT_2: KeyLayout = KeyLayout {
     encoder_left: KeyType::Media(MediaKey::VolumeDecrement),
     encoder_right: KeyType::Media(MediaKey::VolumeIncrement),
     encoder_button: KeyType::Media(MediaKey::Mute),
-    key1: KeyType::Keycode(KeyboardUsage::KeyboardOo),
-    key2: KeyType::Keycode(KeyboardUsage::KeyboardSs),
-    key3: KeyType::Keycode(KeyboardUsage::KeyboardFf),
+    key1: KeyType::Keycode(KeyboardUsage::KeyboardLeftArrow),
+    key2: KeyType::Keycode(KeyboardUsage::KeyboardSpacebar),
+    key3: KeyType::Keycode(KeyboardUsage::KeyboardRightArrow),
+    led_color: RGB8::new(10, 0, 0), // Red
+    active: true,
 };
 ```
 
-The struct holds the current configuration of the Keyboard, each key can be configured to any keycode of the enum ```KeyType``` located in `src/hid_codes.rs`
-for example:
+To customize a layout:
+1. Open `src/layouts.rs`
+2. Modify any of the three `LAYOUT_X` constants
+3. Change key assignments using `KeyType::Keycode()` or `KeyType::Media()`
+4. Adjust LED colors with `RGB8::new(red, green, blue)` (values 0-255)
+5. Rebuild and flash the firmware
 
+**Example - Function Key Layout:**
 ```rust
-const KEYLAYOUT:KeyLayout = KeyLayout {
+pub const LAYOUT_2: KeyLayout = KeyLayout {
     encoder_left: KeyType::Media(MediaKey::VolumeDecrement),
     encoder_right: KeyType::Media(MediaKey::VolumeIncrement),
     encoder_button: KeyType::Media(MediaKey::Mute),
     key1: KeyType::Keycode(KeyboardUsage::KeyboardF10),
     key2: KeyType::Keycode(KeyboardUsage::KeyboardF11),
     key3: KeyType::Keycode(KeyboardUsage::KeyboardF12),
+    led_color: RGB8::new(0, 10, 0), // Green
+    active: true,
 };
 ```
 
-Which could then be used to be configured as hotkeys in your operating system.
+Available key types can be found in the `KeyboardUsage` enum (for regular keys) and `MediaKey` enum (for media controls) from the `usbd_hid` crate.
 
 ### Serial (picocom or combined mode)
 

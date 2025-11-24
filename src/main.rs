@@ -10,20 +10,18 @@ use core::panic::PanicInfo;
 use cortex_m::peripheral::SCB;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_futures::select::select_array;
 use embassy_rp::bind_interrupts;
 use embassy_rp::flash::{Async, Flash};
-use embassy_rp::gpio::{Input, Level, Output, Pull};
+use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{self, PIO0, SPI0, USB};
 use embassy_rp::pio::InterruptHandler as PIOInterruptHandler;
 use embassy_rp::spi::{Config as SpiConfig, Spi};
 use embassy_rp::usb::{Driver, InterruptHandler as USBInterruptHandler};
 use embassy_rp::watchdog::Watchdog;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State as CdcAcmState};
-use embassy_usb::class::hid::{HidReaderWriter, State as Hid_State};
-use usbd_hid::descriptor::{KeyboardReport, MediaKeyboardReport, SerializedDescriptor};
-
+use embassy_usb::class::hid::{HidReaderWriter, State as HidState};
 use embassy_usb::{Config as UsbConfig, UsbDevice};
+use usbd_hid::descriptor::{KeyboardReport, MediaKeyboardReport, SerializedDescriptor};
 use heapless::String;
 use static_cell::StaticCell;
 use ufmt::uwrite;
@@ -31,7 +29,14 @@ use ufmt::uwrite;
 mod hid;
 mod layouts;
 mod led;
+mod state;
 mod uart;
+
+// USB Configuration Constants
+const USB_MAX_PACKET_SIZE: u16 = 64;
+const HID_POLL_INTERVAL_MS: u8 = 60;
+const CDC_MAX_PACKET_SIZE: u16 = 64;
+
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => USBInterruptHandler<USB>;
     PIO0_IRQ_0 => PIOInterruptHandler<PIO0>;
@@ -72,17 +77,10 @@ assign_resources! {
         led_dma: DMA_CH0,
     }
 
-    selector_switch: ModeSwitchRessources{
-        selector_kb: PIN_16,
-        selector_picocprog: PIN_17,
+    selector: SelectorResources{
+        switch1: PIN_16,
+        switch2: PIN_17,
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum DeviceMode {
-    Keyboard,
-    Picoprog,
-    Universal,
 }
 
 // According to Serial Flasher Protocol Specification - version 1
@@ -95,21 +93,8 @@ async fn main(spawner: Spawner) {
     let p: embassy_rp::Peripherals = embassy_rp::init(Default::default());
     let r: AssignedResources = split_resources!(p);
     let driver = Driver::new(p.USB, Irqs);
-
-    let selector_keyboard: Input<'_> = Input::new(r.selector_switch.selector_kb, Pull::Up);
-    let selector_picoprog: Input<'_> = Input::new(r.selector_switch.selector_picocprog, Pull::Up);
-    let watchdog = Watchdog::new(p.WATCHDOG);
-
-    let mode: DeviceMode = if selector_keyboard.get_level() == Level::Low {
-        defmt::info!("keyboard mode");
-        DeviceMode::Keyboard
-    } else if selector_picoprog.get_level() == Level::Low {
-        defmt::info!("picoprog mode");
-        DeviceMode::Picoprog
-    } else {
-        defmt::info!("neutral mode");
-        DeviceMode::Universal
-    };
+    
+    let _watchdog = Watchdog::new(p.WATCHDOG);
 
     let mut flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH4);
     let mut uid: [u8; 8] = [0; 8];
@@ -155,67 +140,56 @@ async fn main(spawner: Spawner) {
         builder
     };
 
-    spawner.spawn(led::led_task(r.led, mode)).unwrap();
+    spawner.spawn(state::state_manager_task(r.selector)).unwrap();
+    spawner.spawn(led::led_task(r.led)).unwrap();
 
-    if !(matches!(mode, DeviceMode::Keyboard)) {
-        let uart_class = {
-            static STATE: StaticCell<CdcAcmState> = StaticCell::new();
-            let state = STATE.init(CdcAcmState::new());
-            CdcAcmClass::new(&mut builder, state, 64)
+    // Create all USB classes from builder
+    let uart_class = {
+        static STATE: StaticCell<CdcAcmState> = StaticCell::new();
+        let state = STATE.init(CdcAcmState::new());
+        CdcAcmClass::new(&mut builder, state, CDC_MAX_PACKET_SIZE)
+    };
+
+    let serprog_class = {
+        static STATE: StaticCell<CdcAcmState> = StaticCell::new();
+        let state = STATE.init(CdcAcmState::new());
+        CdcAcmClass::new(&mut builder, state, CDC_MAX_PACKET_SIZE)
+    };
+
+    let keyboard_class = {
+        static STATE: StaticCell<HidState> = StaticCell::new();
+        let state = STATE.init(HidState::new());
+
+        let config = embassy_usb::class::hid::Config {
+            report_descriptor: KeyboardReport::desc(),
+            request_handler: None,
+            poll_ms: HID_POLL_INTERVAL_MS,
+            max_packet_size: USB_MAX_PACKET_SIZE,
         };
 
-        let serprog_class = {
-            static STATE: StaticCell<CdcAcmState> = StaticCell::new();
-            let state = STATE.init(CdcAcmState::new());
-            CdcAcmClass::new(&mut builder, state, 64)
+        HidReaderWriter::<'_, Driver<'_, USB>, 1, 8>::new(&mut builder, state, config)
+    };
+
+    let multimedia_class = {
+        static STATE: StaticCell<HidState> = StaticCell::new();
+        let state = STATE.init(HidState::new());
+
+        let config = embassy_usb::class::hid::Config {
+            report_descriptor: MediaKeyboardReport::desc(),
+            request_handler: None,
+            poll_ms: HID_POLL_INTERVAL_MS,
+            max_packet_size: USB_MAX_PACKET_SIZE,
         };
 
-        spawner.spawn(uart::uart_task(uart_class, r.uart)).unwrap();
-        spawner.spawn(serprog_task(serprog_class, r.spi)).unwrap();
-    }
-
-    if !(matches!(mode, DeviceMode::Picoprog)) {
-        let keyboard_class: HidReaderWriter<'_, Driver<'_, USB>, 1, 8> = {
-            static STATE: StaticCell<Hid_State> = StaticCell::new();
-            let state = STATE.init(Hid_State::new());
-
-            let config = embassy_usb::class::hid::Config {
-                report_descriptor: KeyboardReport::desc(),
-                request_handler: None,
-                poll_ms: 60,
-                max_packet_size: 64,
-            };
-
-            HidReaderWriter::new(&mut builder, state, config)
-        };
-
-        let multimedia_class: HidReaderWriter<'_, Driver<'_, USB>, 1, 8> = {
-            static STATE: StaticCell<Hid_State> = StaticCell::new();
-            let state = STATE.init(Hid_State::new());
-
-            let config = embassy_usb::class::hid::Config {
-                report_descriptor: MediaKeyboardReport::desc(),
-                request_handler: None,
-                poll_ms: 60,
-                max_packet_size: 64,
-            };
-
-            HidReaderWriter::new(&mut builder, state, config)
-        };
-
-        spawner.spawn(hid::hid_task(spawner, keyboard_class, multimedia_class, r.hid, r.encoder)).unwrap();
-    }
+        HidReaderWriter::<'_, Driver<'_, USB>, 1, 8>::new(&mut builder, state, config)
+    };
 
     let usb = builder.build();
-    // We can't really recover here so just unwrap
+
     spawner.spawn(usb_task(usb)).unwrap();
-    spawner
-        .spawn(selector_watchdog_task(
-            watchdog,
-            selector_keyboard,
-            selector_picoprog,
-        ))
-        .unwrap();
+    spawner.spawn(uart::uart_task(uart_class, r.uart)).unwrap();
+    spawner.spawn(serprog_task(serprog_class, r.spi)).unwrap();
+    spawner.spawn(hid::hid_task(spawner, keyboard_class, multimedia_class, r.hid, r.encoder)).unwrap();
 
     loop {
         embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
@@ -228,21 +202,6 @@ type CustomUsbDevice = UsbDevice<'static, CustomUsbDriver>;
 #[embassy_executor::task]
 async fn usb_task(mut usb: CustomUsbDevice) -> ! {
     usb.run().await
-}
-
-#[embassy_executor::task]
-async fn selector_watchdog_task(
-    mut watchdog: Watchdog,
-    mut selector_keyboard: Input<'static>,
-    mut selector_picoprog: Input<'static>,
-) {
-    let (_, _) = select_array([
-        selector_keyboard.wait_for_any_edge(),
-        selector_picoprog.wait_for_any_edge(),
-    ])
-    .await;
-
-    watchdog.trigger_reset();
 }
 
 #[embassy_executor::task]
