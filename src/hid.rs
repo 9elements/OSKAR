@@ -1,5 +1,5 @@
 use crate::{EncoderResources, ButtonResources};
-use crate::layouts::{KeyLayout};
+use crate::state::DEVICE_STATE;
 use defmt::unreachable;
 use defmt_rtt as _;
 use embassy_executor::{InterruptExecutor, Spawner};
@@ -13,8 +13,13 @@ use embassy_usb::class::hid::HidReaderWriter;
 use usbd_hid::descriptor::*;
 use embassy_sync::pubsub::PubSubChannel;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
 type CustomHid = HidReaderWriter<'static, Driver<'static, USB>, 1, 8>;
-static KEY_EVENT_QUEUE: PubSubChannel::<CriticalSectionRawMutex, KeyEvent, 2, 2, 2> = PubSubChannel::new();
+
+/// USB HID specification allows up to 6 simultaneous key presses (6-key rollover)
+const MAX_SIMULTANEOUS_KEYS: usize = 6;
+
+static KEY_EVENT_QUEUE: PubSubChannel::<CriticalSectionRawMutex, KeyEvent, 12, 2, 2> = PubSubChannel::new();
 
 #[derive(Clone)]
 #[derive(PartialEq)]
@@ -39,19 +44,11 @@ struct KeyEvent {
     event: Event,
 }
 
+#[derive(Copy, Clone, PartialEq)]
 pub enum KeyType {
     Media(MediaKey),
     Keycode(KeyboardUsage),
 }
-
-const KEYLAYOUT:KeyLayout = KeyLayout {
-    encoder_left: KeyType::Media(MediaKey::VolumeDecrement),
-    encoder_right: KeyType::Media(MediaKey::VolumeIncrement),
-    encoder_button: KeyType::Media(MediaKey::Mute),
-    key1: KeyType::Keycode(KeyboardUsage::KeyboardOo),
-    key2: KeyType::Keycode(KeyboardUsage::KeyboardSs),
-    key3: KeyType::Keycode(KeyboardUsage::KeyboardFf),
-};
 
 #[embassy_executor::task]
 pub async fn hid_task(spawner: Spawner, mut keyboard_class: CustomHid, mut multimedia_class: CustomHid, button_resources: ButtonResources, encoder_resources: EncoderResources) -> ! {
@@ -63,28 +60,60 @@ pub async fn hid_task(spawner: Spawner, mut keyboard_class: CustomHid, mut multi
     spawner.spawn(button_task(button_resources)).unwrap();
 
     let mut sub = KEY_EVENT_QUEUE.subscriber().unwrap();
+    let mut state_receiver = DEVICE_STATE.receiver().unwrap();
+
+    // Wait for initial state
+    let mut current_state = state_receiver.changed().await;
+
+    // Track currently pressed regular keys
+    let mut pressed_keys: [u8; MAX_SIMULTANEOUS_KEYS] = [0; MAX_SIMULTANEOUS_KEYS];
 
     loop {
         let key_event: KeyEvent = sub.next_message_pure().await;
 
+        // Check for state updates (non-blocking)
+        if let Some(new_state) = state_receiver.try_changed() {
+            // Clear pressed keys when state changes to prevent drift
+            if current_state != new_state {
+                pressed_keys = [0; MAX_SIMULTANEOUS_KEYS];
+
+                // Send empty keyboard report to release all keys
+                let empty_report = KeyboardReport {
+                    keycodes: [0; MAX_SIMULTANEOUS_KEYS],
+                    leds: 0,
+                    modifier: 0,
+                    reserved: 0,
+                };
+                let _ = keyboard_class.write_serialize(&empty_report).await;
+            }
+
+            current_state = new_state;
+        }
+
+        // Only process keys if keyboard is active
+        let layout = current_state.layout();
+        if !layout.active {
+            continue; // Skip processing when keyboard is off (Layout 1)
+        }
+
         match key_event.key {
             Key::EncoderLeft => {
-                (keyboard_class, multimedia_class) = handle_encoder_interaction(keyboard_class, multimedia_class, KEYLAYOUT.encoder_left).await;
+                handle_encoder_interaction(&mut keyboard_class, &mut multimedia_class, layout.encoder_left).await;
             },
             Key::EncoderRight => {
-                (keyboard_class, multimedia_class) = handle_encoder_interaction(keyboard_class, multimedia_class, KEYLAYOUT.encoder_right).await;
+                handle_encoder_interaction(&mut keyboard_class, &mut multimedia_class, layout.encoder_right).await;
             },
             Key::EncoderButton => {
-                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.encoder_button, key_event.event).await;
+                send_code(&mut keyboard_class, &mut multimedia_class, layout.encoder_button, key_event.event, &mut pressed_keys).await;
             },
             Key::Key1 => {
-                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key1, key_event.event).await;
+                send_code(&mut keyboard_class, &mut multimedia_class, layout.key1, key_event.event, &mut pressed_keys).await;
             },
             Key::Key2 => {
-                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key2, key_event.event).await;
+                send_code(&mut keyboard_class, &mut multimedia_class, layout.key2, key_event.event, &mut pressed_keys).await;
             },
             Key::Key3 => {
-                (keyboard_class, multimedia_class) = send_code(keyboard_class, multimedia_class, KEYLAYOUT.key3,key_event.event).await;
+                send_code(&mut keyboard_class, &mut multimedia_class, layout.key3, key_event.event, &mut pressed_keys).await;
             }
         }
     }
@@ -137,9 +166,12 @@ pub async fn button_task(r: ButtonResources) -> ! {
 
     let publisher = KEY_EVENT_QUEUE.publisher().unwrap();
 
-    loop {
+    // Track previous state of all buttons (High = not pressed, Low = pressed)
+    let mut prev_states: [Level; 4] = [Level::High; 4];
 
-        let (_, index) = select_array([
+    loop {
+        // Wait for any button to change state
+        select_array([
             key1.wait_for_any_edge(),
             key2.wait_for_any_edge(),
             key3.wait_for_any_edge(),
@@ -147,42 +179,46 @@ pub async fn button_task(r: ButtonResources) -> ! {
         ])
         .await;
 
-        match index {
-            0 => {
-                match key1.get_level() {
-                    Level::Low => publisher.publish_immediate(KeyEvent {key: Key::Key1, event: Event::Pressed}),
-                    Level::High => publisher.publish_immediate(KeyEvent {key: Key::Key1, event: Event::Released}),
-                }
+        // Debounce delay
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(5)).await;
+
+        // Poll ALL button states (more reliable than edge detection)
+        let current_states = [
+            key1.get_level(),
+            key2.get_level(),
+            key3.get_level(),
+            encoder_button.get_level(),
+        ];
+
+        // Compare with previous state and publish changes
+        for (i, (&prev, &curr)) in prev_states.iter().zip(current_states.iter()).enumerate() {
+            if prev != curr {
+                let key = match i {
+                    0 => Key::Key1,
+                    1 => Key::Key2,
+                    2 => Key::Key3,
+                    3 => Key::EncoderButton,
+                    _ => unreachable!(),
+                };
+
+                let event = match curr {
+                    Level::Low => Event::Pressed,
+                    Level::High => Event::Released,
+                };
+
+                publisher.publish_immediate(KeyEvent { key, event });
             }
-            1 => {
-                match key2.get_level() {
-                    Level::Low => publisher.publish_immediate(KeyEvent {key: Key::Key2, event: Event::Pressed}),
-                    Level::High => publisher.publish_immediate(KeyEvent {key: Key::Key2, event: Event::Released}),
-                }
-            }
-            2 => {
-                match key3.get_level() {
-                    Level::Low => publisher.publish_immediate(KeyEvent {key: Key::Key3, event: Event::Pressed}),
-                    Level::High => publisher.publish_immediate(KeyEvent {key: Key::Key3, event: Event::Released}),
-                }
-            }
-            3 => {
-                match encoder_button.get_level() {
-                    Level::Low => publisher.publish_immediate(KeyEvent {key: Key::EncoderButton, event: Event::Pressed}),
-                    Level::High => publisher.publish_immediate(KeyEvent {key: Key::EncoderButton, event: Event::Released}),
-                }
-            }
-            _ => unreachable!(),
-        };
+        }
+
+        // Update previous state
+        prev_states = current_states;
     }
 }
 
 
-async fn handle_encoder_interaction(mut keyboard_class: CustomHid, mut media_class: CustomHid, code: KeyType) -> (CustomHid, CustomHid) {
-
+async fn handle_encoder_interaction(keyboard_class: &mut CustomHid, media_class: &mut CustomHid, code: KeyType) {
     match code {
-        KeyType::Media(media_key) =>    {
-
+        KeyType::Media(media_key) => {
             let mut report = MediaKeyboardReport {
                 usage_id: media_key as u16,
             };
@@ -201,10 +237,11 @@ async fn handle_encoder_interaction(mut keyboard_class: CustomHid, mut media_cla
         },
 
         KeyType::Keycode(keyboard_usage) => {
-            let keycodes: [u8; 6] = [keyboard_usage as u8, 0, 0, 0, 0, 0];
+            let mut keycodes = [0; MAX_SIMULTANEOUS_KEYS];
+            keycodes[0] = keyboard_usage as u8;
 
             let mut report: KeyboardReport = KeyboardReport {
-                keycodes: keycodes,
+                keycodes,
                 leds: 0,
                 modifier: 0,
                 reserved: 0,
@@ -214,24 +251,19 @@ async fn handle_encoder_interaction(mut keyboard_class: CustomHid, mut media_cla
                 log::error!("Failed to send HID key press: {:?}", e);
             }
 
-            report.keycodes = [0,0,0,0,0,0];
+            report.keycodes = [0; MAX_SIMULTANEOUS_KEYS];
 
             if let Err(e) = keyboard_class.write_serialize(&report).await {
                 log::error!("Failed to send HID key press: {:?}", e);
             }
         },
-    };
-
-
-
-    return (keyboard_class, media_class)
+    }
 }
 
-async fn send_code(mut keyboard_class: CustomHid, mut media_class: CustomHid , code: KeyType, event: Event) -> (CustomHid, CustomHid) {
-
+async fn send_code(keyboard_class: &mut CustomHid, media_class: &mut CustomHid, code: KeyType, event: Event, pressed_keys: &mut [u8; MAX_SIMULTANEOUS_KEYS]) {
     match code {
-        KeyType::Media(media_key) =>    {
-
+        KeyType::Media(media_key) => {
+            // Media keys don't support multiple simultaneous presses in standard HID
             let code = match event {
                 Event::Pressed => media_key as u16,
                 Event::Released => 0x00 as u16,
@@ -242,29 +274,57 @@ async fn send_code(mut keyboard_class: CustomHid, mut media_class: CustomHid , c
             };
 
             if let Err(e) = media_class.write_serialize(&report).await {
-                log::error!("Failed to send HID key press: {:?}", e);
+                log::error!("Failed to send HID media key: {:?}", e);
             }
         },
 
         KeyType::Keycode(keyboard_usage) => {
-            let keycodes: [u8; 6] = if event == Event::Pressed {
-                [keyboard_usage as u8, 0, 0, 0, 0, 0]
-            } else {
-                [0, 0, 0, 0, 0, 0]
-            };
+            let key_code = keyboard_usage as u8;
 
+            // Update pressed keys array
+            match event {
+                Event::Pressed => {
+                    // Add key if not   present and there's space
+                    if !pressed_keys.contains(&key_code) {
+                        for slot in pressed_keys.iter_mut() {
+                            if *slot == 0 {
+                                *slot = key_code;
+                                break;
+                            }
+                        }
+                    }
+                },
+                Event::Released => {
+                    // Remove key from pressed keys (first occurrence only)
+                    let mut found_index = None;
+                    for (i, slot) in pressed_keys.iter().enumerate() {
+                        if *slot == key_code {
+                            found_index = Some(i);
+                            break;
+                        }
+                    }
+
+                    // If found, shift all subsequent keys left to fill the gap
+                    if let Some(index) = found_index {
+                        for i in index..5 {
+                            pressed_keys[i] = pressed_keys[i + 1];
+                        }
+                        pressed_keys[5] = 0;
+                    }
+                },
+            }
+
+            // Send report with all currently pressed keys
             let report: KeyboardReport = KeyboardReport {
-                keycodes: keycodes,
+                keycodes: *pressed_keys,
                 leds: 0,
                 modifier: 0,
                 reserved: 0,
             };
 
             if let Err(e) = keyboard_class.write_serialize(&report).await {
-                log::error!("Failed to send HID key press: {:?}", e);
+                log::error!("Failed to send HID keyboard report: {:?}", e);
             }
         },
-    };
-
-    return (keyboard_class, media_class);
+    }
 }
