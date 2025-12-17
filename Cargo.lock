@@ -944,7 +944,6 @@ dependencies = [
  "static_cell",
  "tock-registers",
  "ufmt",
- "usbd-hid",
  "zerocopy",
 ]
 

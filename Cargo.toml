@@ -31,7 +31,6 @@ tock-registers = "0.9.0"
 ufmt = "0.2.0"
 zerocopy = { version = "0.8", features = ["derive"] }
 num_enum = { version = "0.7.3", default-features = false }
-usbd-hid = "0.8.2"
 smart-leds = "0.4.0"
 
 [patch.crates-io]
